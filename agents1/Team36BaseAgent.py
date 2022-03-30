@@ -58,6 +58,7 @@ class BaseAgent(BaseLineAgent):
         self._current_room = None
         self._door = None
         self._carrying_capacity = 1
+        self._isLazy = False
         self.gf_start = None
         self._current_state = {'type': None}
         self._world_state = {
@@ -81,8 +82,9 @@ class BaseAgent(BaseLineAgent):
         self.gf_start = None
         self._current_state = {'type': None}
         self._carrying_capacity = 1
+        self._isLazy = False
         self._beliefs = {}
-        self._test = True
+        self._test = False
 
         self._world_state = {
             'found_blocks': [],     # list of blocks, contains {'location','visualization','by',('obj_id')}
@@ -602,9 +604,10 @@ class BaseAgent(BaseLineAgent):
                 return GrabObject.__name__, {'object_id': block['obj_id']}
 
     def drop_block(self, agent_name, state):
-        self._phase = Phase.PLAN_NEXT_ACTION
-        if len(state.get_self()['is_carrying']) == 0:
-            return
+        if len(state.get_self()['is_carrying']) == 1:
+            self._phase = Phase.PLAN_NEXT_ACTION
+        elif len(state.get_self()['is_carrying']) > 1:
+            self._phase = Phase.PLAN_PATH_TO_GOAL
         block = state.get_self()['is_carrying'][0]
         block_vis = {'size':block['visualization']['size'],'shape':block['visualization']['shape'],'colour':block['visualization']['colour']}
         for goal in self.get_missing_goals():
