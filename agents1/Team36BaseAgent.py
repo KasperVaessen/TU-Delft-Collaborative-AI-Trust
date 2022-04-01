@@ -475,7 +475,8 @@ class BaseAgent(BaseLineAgent):
                     goal = missing_goals[next_goal_index]
                     needed_goal_blocks = [b for b in observations['blocks']
                                             if b['visualization'] == goal['visualization']]
-                    if len(needed_goal_blocks) > 0:
+                    if len(needed_goal_blocks) > 0 and\
+                            (len(state.get_self()['is_carrying']) < self._carrying_capacity):
                         # we have a block we can pick up
                         self._phase = Phase.PICKUP_BLOCK
                         self.__next_phase.append(Phase.PLAN_SEARCH_ROOM)
@@ -522,7 +523,8 @@ class BaseAgent(BaseLineAgent):
             #     self._phase = Phase.DROP_BLOCK
 
             if Phase.PLAN_VERIFY_GOALS == self._phase:
-                goals_to_verify = [goal for goal in self._world_state['goals'] if goal['satisfied'] and not goal['verified']]
+                goals_to_verify = [goal for goal in self._world_state['goals'] if
+                                   goal['satisfied'] and not goal['verified']]
                 self._navigator.reset_full()
                 for goal in goals_to_verify:
                     self._navigator.add_waypoint(goal['location'])
@@ -692,7 +694,10 @@ class BaseAgent(BaseLineAgent):
         if len(state.get_self()['is_carrying']) == 0:
             return
         block = state.get_self()['is_carrying'][0]
-        block_vis = {'size':block['visualization']['size'],'shape':block['visualization']['shape'],'colour':block['visualization']['colour']}
+        block_vis = copy.deepcopy(block['visualization'])
+        block_vis.pop('depth')
+        block_vis.pop('opacity')
+        block_vis.pop('visualize_from_center')
         for goal in self.get_missing_goals():
             if state.get_self()['location'] == goal['location'] and block_vis == goal['visualization']:
                 goal['satisfied'] = True

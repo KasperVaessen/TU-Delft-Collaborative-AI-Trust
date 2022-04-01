@@ -143,7 +143,6 @@ class ColorBlindAgent(BW4TBrain):
                 return OpenDoorAction.__name__, {'object_id': self._door['obj_id']}
 
             if Phase.SEARCH_ROOM == self._phase:
-                # TODO: Zorgen dat hij eerst de hele kamer doorzoekt voor hij dingen weg gaat brengen
                 self._room_tiles = [tile for tile in state.values()
                                     if 'class_inheritance' in tile
                                     and 'AreaTile' in tile['class_inheritance']
