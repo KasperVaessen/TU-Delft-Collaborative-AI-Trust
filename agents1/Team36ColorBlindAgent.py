@@ -88,7 +88,7 @@ class ColorBlindAgent(BaseAgent):
         self._possible_targets = {}
         missing_index = len(missing_goals)
         for block in self._world_state['found_blocks']:
-            if block['location'] != self._target_location:
+            if block['location'] != self._target_location and block['location'] not in [goal['location'] for goal in self._world_state['goals']]:
                 try:
                     i = missing_goals.index(block['visualization'])
 
