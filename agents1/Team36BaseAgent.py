@@ -1,6 +1,7 @@
 import copy
 import random
 from typing import Dict
+from functools import reduce
 import json
 import enum
 from agents1.BW4TBaselineAgent import BaseLineAgent
@@ -34,12 +35,15 @@ class Phase(enum.Enum):
     PLAN_VERIFY_GOALS = 18,
     VERIFY_GOALS = 19,
     PLAN_FIX_SOLUTION = 20,
-    FIX_SOLUTION = 21
+    FIX_SOLUTION = 21,
+    RETRY_SOLUTION = 22,
+    DROP_NEXT_TO_GOAL = 23,
 
 class Status(enum.Enum):
     MOVING_TO_ROOM = 0,
     MOVING_TO_GOAL = 1,
     PICKING_UP_BLOCK = 2,
+    FIXING_SOLUTION = 3,
 
 # TODO: fix missing information for block visualization (like for colour blind) or additional (useless) information, cuz who knows what whacky stuff other agents do
 
@@ -56,11 +60,12 @@ class BaseAgent(BaseLineAgent):
         self._be_lazy = False
         self._be_lazy_after_moves = 0
         self.gf_start = None
+        self._status = None
         self._current_state = {'type': None}
         self._world_state = {
             'found_blocks': [],  # list of blocks, contains {'location','visualization','by''}
             'teammembers': {},  # dict of teammembers accessible by their id, contains {'state','carrying','index'}
-            'goals': [],  # list of goals, contains {'location','visualization','index','satisfied','by','checked'}
+            'goals': [],  # list of goals, contains {'location','visualization','index','satisfied','by','verified'}
             'searched_rooms': [],  # list of rooms, contains {'room_id','by'}
             'opened_doors': [],  # list of doors, contains {'room_id','by'}
             'agent_index': -1,  # index/dominance of this agent
@@ -78,6 +83,7 @@ class BaseAgent(BaseLineAgent):
         self._door = None
         self._phase = Phase.PLAN_NEXT_ACTION
         self.gf_start = None
+        self._status = None
         self._current_state = {'type': None}
         self._carrying_capacity = 1
         self._is_lazy = False
@@ -87,11 +93,13 @@ class BaseAgent(BaseLineAgent):
         self._world_state = {
             'found_blocks': [],     # list of blocks, contains {'location','visualization','by',('obj_id')}
             'teammembers': {},      # dict of teammembers accessible by their id, contains {'state','carrying','index'}
-            'goals': [],            # list of goals, contains {'location','visualization','index','satisfied','by','checked'}
+            'goals': [],            # list of goals, contains {'location','visualization','index','satisfied','by','verified'}
             'searched_rooms': [],   # list of rooms, contains {'room_id','by'}
             'opened_doors': [],     # list of doors, contains {'room_id','by'}
             'agent_index': -1,      # index/dominance of this agent
         }
+
+        self._load_trust()
 
         self.__next_phase = []
 
@@ -137,7 +145,7 @@ class BaseAgent(BaseLineAgent):
                                 self._decreaseBelief("Competence", r['by'], 0.1)
                         # member that is searching the room has found a block -> increase competence
                             if r['by'] is member and r['room_id'] == room:
-                                self._increaseBelief("Competence", r['by'], 0.05)
+                                self._increaseBelief("Competence", r['by'], 0.02)
                         current_world_state['found_blocks'].append(block)
 
                 elif 'Picking up goal block ' in msg:
@@ -149,6 +157,9 @@ class BaseAgent(BaseLineAgent):
                         if block_vis == block['visualization'] and block_loc == block['location']:
                             current_world_state['found_blocks'].remove(block)
                             break
+                    for goal in [g for g in current_world_state['goals'] if g['visualization'] == block_vis and g['location'] == block_loc]:
+                        goal['satisfied'] = False
+                        goal['verified'] = False
                     # add info to teammember
                     # current_world_state['teammembers'][member]['state'] = {'type': State.PICKING_UP_BLOCK, 'block': {'visualization': block_vis, 'location': block_loc}}
                     current_world_state['teammembers'][member]['carrying'].append(block_vis)
@@ -161,10 +172,11 @@ class BaseAgent(BaseLineAgent):
                         {'visualization': block_vis, 'location': block_loc, 'by': member})
                     # remove info from teammembers that a member is carrying a block
                     try:
+                        self._increaseBelief("Willingness", member, 0.05)
                         current_world_state['teammembers'][member]['carrying'].remove(block_vis)
                     except ValueError:
                         # member was not carrying block they said they dropped, thus is probably lying
-                        self._decreaseBelief("Trust", member, 0.2)
+                        self._decreaseBelief("Willingness", member, 0.2)
                     # test if location is supposedly goal, if so set goal to be SAT
                     for goal in current_world_state['goals']:
                         if block_loc == goal['location'] and block_vis == goal['visualization']:
@@ -192,24 +204,22 @@ class BaseAgent(BaseLineAgent):
     def previousGoalsSatisfied(self, goalIndex):
         while goalIndex >= 0:
             for goal in self._world_state['goals']:
-                if goal['index'] == goalIndex and goal['satisfied']:
-                    goalIndex -= 1
-                    break
-                else:
-                    return False
+                if goal['index'] == goalIndex:
+                    if goal['satisfied']:
+                        goalIndex -= 1
+                        break
+                    else:
+                        return False
         return True
 
     def _increaseBelief(self, type, member, amount):
+        if member == self._you['obj_id']:
+            return
         if type == "Willingness":
             if self._beliefs[member]["Willingness"] + amount < self._maxTrust:
                 self._beliefs[member]["Willingness"] += amount
             else:
                 self._beliefs[member]["Willingness"] = self._maxTrust
-        elif type == "Trust":
-            if self._beliefs[member]["Trust"] + amount < self._maxTrust:
-                self._beliefs[member]["Trust"] += amount
-            else:
-                self._beliefs[member]["Trust"] = self._maxTrust
         elif type == "Competence":
             if self._beliefs[member]["Competence"] + amount < self._maxTrust:
                 self._beliefs[member]["Competence"] += amount
@@ -217,16 +227,13 @@ class BaseAgent(BaseLineAgent):
                 self._beliefs[member]["Competence"] = self._maxTrust
 
     def _decreaseBelief(self, type, member, amount):
+        if member == self._you['obj_id']:
+            return
         if type == "Willingness":
             if self._beliefs[member]["Willingness"] - amount > 0.0:
                 self._beliefs[member]["Willingness"] -= amount
             else:
                 self._beliefs[member]["Willingness"] = 0.0
-        elif type == "Trust":
-            if self._beliefs[member]["Trust"] - amount > 0.0:
-                self._beliefs[member]["Trust"] -= amount
-            else:
-                self._beliefs[member]["Trust"] = 0.0
         elif type == "Competence":
             if self._beliefs[member]["Competence"] - amount > 0.0:
                 self._beliefs[member]["Competence"] -= amount
@@ -237,17 +244,14 @@ class BaseAgent(BaseLineAgent):
         # if a goal has been satisfied and you are carrying a block for that goal, drop the block
         missing_goals = self.get_missing_goals()
         is_goal = False
-        for goal in missing_goals:
+        for goal in [g for g in self._world_state['goals'] if g not in missing_goals]:
             if len(state.get_self()['is_carrying']) == 0:
-                return
+                break
             carrying_vis = state.get_self()['is_carrying'][0]['visualization']
             if (carrying_vis['size'] == goal['visualization']['size']
                     and carrying_vis['shape'] == goal['visualization']['shape']
                     and carrying_vis['colour'] == goal['visualization']['colour']):
-                is_goal = True
-
-        if not is_goal:
-            self._phase = Phase.DROP_BLOCK
+                self._phase = Phase.DROP_BLOCK
         
     def _processObservations(self, state):
         observations = {
@@ -263,10 +267,7 @@ class BaseAgent(BaseLineAgent):
             block_vis.pop('opacity')
             block_vis.pop('visualize_from_center')
             block_vis.pop('depth')
-            for goal in self._world_state['goals']:
-                if (block_vis == goal['visualization']):
-                    observations['blocks'].append({'obj_id': block['obj_id'], 'visualization': block_vis, 'location': block['location']})
-                    break
+            observations['blocks'].append({'obj_id': block['obj_id'], 'visualization': block_vis, 'location': block['location']})
         
         # teammembers:
 
@@ -285,6 +286,9 @@ class BaseAgent(BaseLineAgent):
             # if block is on a correct goal position, skip
             goals = [g for g in self._world_state['goals']
                         if g['visualization'] == block['visualization'] and g['location'] == block['location']]
+            for g in goals:
+                g['satisfied'] = True
+                g['verified'] = True
             if len(goals) > 0:
                 # this block is placed on a correct goal position
                 continue
@@ -300,51 +304,55 @@ class BaseAgent(BaseLineAgent):
 
         # remove all blocks that should exist, but don't and update trust
         for block in blocks_that_should_be_at_location:
+            if block['by'] == self._you['obj_id']:
+                continue
             verified = False
             for b in observations['blocks']:
                 if b['visualization'] == block['visualization'] and b['location'] == block['location']:
                     verified = True
-                    self._increaseBelief("Trust", block['by'], 0.05)
+                    self._increaseBelief("Willingness", block['by'], 0.05)
                     break
             if not verified:
                 self._world_state['found_blocks'].remove(block)
-                self._decreaseBelief("Trust", block['by'], 0.1)
+                self._decreaseBelief("Willingness", block['by'], 0.1)
 
         # handle goal verification (only done if standing on a goal, since sense capabilities is a bit iffy)
         goals_to_verify_at_cur_location = [goal for goal in self._world_state['goals']
-                                    if goal['satisfied']
-                                        and not goal['verified']
+                                    if not goal['verified']
                                         and goal['location'] == self._you['location']]
         if len(goals_to_verify_at_cur_location) > 0:
             goal = goals_to_verify_at_cur_location[0]
             correct_blocks_on_goal = [b for b in observations['blocks']
                                         if b['location'] == goal['location']
                                             and b['visualization'] == goal['visualization']]
-            if len(correct_blocks_on_goal) > 0:
-                # this goal has a correct block
+            if len(correct_blocks_on_goal) > 0 == goal['satisfied']:
+                # this goal has a correct 'satisfied' parameter
                 goal['verified'] = True
-                self._increaseBelief("Trust", goal['by'], 0.2)
+                self._increaseBelief("Willingness", goal['by'], 0.2)
             else:
-                # this goal was not satisfied, update trust of goal['by']
-                goal['satisfied'] = False
-                self._decreaseBelief("Trust", goal['by'], 0.3)
+                # this goal did not have a correct 'satisfied' param, updating and update trust of goal['by']
+                goal['satisfied'] = len(correct_blocks_on_goal) > 0
+                goal['verified'] = True
+                if goal['by'] is not None:
+                    self._decreaseBelief("Willingness", goal['by'], 0.3)
 
         # handle visible doors and update trust
         for door in observations['doors']:
             for d in self._world_state['opened_doors']:
                 if not door['is_open'] and door['room_name'] == d['room_id'] and not d['checked']:
                     # door that was said to be opened is not open, decrease trust
-                    self._decreaseBelief("Trust", d['by'], 0.05)
+                    self._decreaseBelief("Willingness", d['by'], 0.05)
                     d['checked'] = True
                 if door['is_open'] and door['room_name'] == d['room_id'] and not d['checked']:
                     # member opened door when saying it would open door, increase trust
-                    self._increaseBelief("Trust", d['by'], 0.01)
+                    self._increaseBelief("Willingness", d['by'], 0.01)
                     d['checked'] = True
 
     def filter_bw4t_observations(self, state):
         return state
 
     def decide_on_bw4t_action(self, state: State):
+        self._status = state
         agent_name = state[self.agent_id]['obj_id']
         self._you = state[self.agent_id]
         # Add team members
@@ -354,7 +362,11 @@ class BaseAgent(BaseLineAgent):
                 self._world_state['agent_index'] = index
             if member != agent_name and member not in self._world_state['teammembers']:
                 self._world_state['teammembers'][member] = {'state':{'type':None}, 'carrying': [], 'index':index}
-                
+                self._beliefs[member] = {
+                    "Competence": 0.5,
+                    "Willingness": 0.5
+                }
+
         if len(self._world_state['goals']) == 0:
             # init goals
             self.init_goals(state)
@@ -365,17 +377,8 @@ class BaseAgent(BaseLineAgent):
         # handle observations, what blocks you currently see, teammates and their actual states, doors etc
         observations = self._processObservations(state)
         self._handleObservations(observations)
-        if not self._beliefs:
-            self._load_trust()
-        # Update trust beliefs for team members
-        if not self._beliefs:
-            for member in state['World']['team_members']:
-                self._beliefs[member] = {
-                    "Trust": 0.5,
-                    "Competence": 0.5,
-                    "Willingness": 0.5
-                }
 
+        # Update trust beliefs for team members
         self._trustBelief(self._teamMembers, receivedMessages)
         self._save_trust()
 
@@ -391,6 +394,7 @@ class BaseAgent(BaseLineAgent):
                 break
 
         while True:
+            print(self._phase)
             if Phase.PLAN_NEXT_ACTION == self._phase:
                 if len(self.__next_phase) > 0:
                     self._phase = self.__next_phase.pop()
@@ -412,7 +416,7 @@ class BaseAgent(BaseLineAgent):
             if Phase.FOLLOW_PATH_TO_ROOM == self._phase:
                 self._state_tracker.update(state)
                 action = self._navigator.get_move_action(self._state_tracker)
-                if action != None:
+                if action is not None:
                     return action, {}
                 self._phase = Phase.PLAN_SEARCH_ROOM
 
@@ -423,10 +427,19 @@ class BaseAgent(BaseLineAgent):
                     continue
                 self._state_tracker.update(state)
                 action = self._navigator.get_move_action(self._state_tracker)
-                if action != None:
+                if action is not None:
                     return action, {}
                 else:
-                    self._phase = Phase.PICKUP_BLOCK
+                    try:
+                        closest_target = self.get_closest_possible_target(state)
+                        targets_in_range = list(filter(lambda b: b['visualization'] == closest_target['visualization'], observations['blocks']))
+                        if len(targets_in_range) > 0:
+                            action, param = self.pickup_block(agent_name, observations, targets_in_range[0]['obj_id'])
+                            return action, param
+                        else:
+                            self._phase = Phase.PLAN_NEXT_ACTION
+                    except:
+                        self._phase = Phase.PLAN_NEXT_ACTION
 
             if Phase.FOLLOW_PATH_TO_GOAL == self._phase:
                 if self._is_lazy and self._check_if_lazy():
@@ -434,15 +447,9 @@ class BaseAgent(BaseLineAgent):
                     self.__next_phase.append(Phase.PLAN_PATH_TO_CLOSED_DOOR)
                     self._navigator.reset_full()
                     continue
-                self._state_tracker.update(state)
-                action = self._navigator.get_move_action(self._state_tracker)
-                if action != None:
-                    return action, {}
-                else:
-                    self._phase = Phase.DROP_BLOCK
-                    if len([goal for goal in self._world_state['goals'] if goal['satisfied'] and not goal['verified']]) > 0:
-                        # if there exist unverified but satisfied goals, verify those
-                        self.__next_phase.append(Phase.PLAN_VERIFY_GOALS)
+                res = self.follow_path_to_goal(state, agent_name)
+                if res is not None:
+                    return res
 
             if Phase.FOLLOW_PATH_TO_CLOSED_DOOR == self._phase:
                 if self._is_lazy and self._check_if_lazy():
@@ -452,7 +459,7 @@ class BaseAgent(BaseLineAgent):
                 self._state_tracker.update(state)
                 # Follow path to door
                 action = self._navigator.get_move_action(self._state_tracker)
-                if action != None:
+                if action is not None:
                     return action, {}
                 self._phase = Phase.OPEN_DOOR
 
@@ -475,15 +482,12 @@ class BaseAgent(BaseLineAgent):
                     goal = missing_goals[next_goal_index]
                     needed_goal_blocks = [b for b in observations['blocks']
                                             if b['visualization'] == goal['visualization']]
-                    if len(needed_goal_blocks) > 0 and\
-                            (len(state.get_self()['is_carrying']) < self._carrying_capacity):
+                    if len(needed_goal_blocks) > 0:
                         # we have a block we can pick up
-                        self._phase = Phase.PICKUP_BLOCK
-                        self.__next_phase.append(Phase.PLAN_SEARCH_ROOM)
-                        continue
+                        return self.pickup_block(agent_name, observations, needed_goal_blocks[0]['obj_id'])
 
                 action = self._navigator.get_move_action(self._state_tracker)
-                if action != None:
+                if action is not None:
                     return action, {}
 
                 # room is completely searched
@@ -491,15 +495,18 @@ class BaseAgent(BaseLineAgent):
                 self._phase = Phase.PLAN_NEXT_ACTION
 
 
-            if Phase.PICKUP_BLOCK == self._phase:
-                action = self.pickup_block(agent_name, observations)
-                if action is not None:
-                    return action
+            # if Phase.PICKUP_BLOCK == self._phase:
+            #     action = self.pickup_block(agent_name, observations)
+            #     if action is not None:
+            #         return action
 
             if Phase.DROP_BLOCK == self._phase:
-                action = self.drop_block(agent_name, state)
-                if action is not None:
-                    return action
+                if len(state.get_self()['is_carrying']) == 0:
+                    self._phase = Phase.PLAN_NEXT_ACTION
+                else:
+                    action = self.drop_block(agent_name, state, state.get_self()['is_carrying'][0]['obj_id'])
+                    if action is not None:
+                        return action
 
             # TODO: remove when deemed absolutely unnecessary/useless
             # if Phase.FOLLOW_PATH_TO_VERIFY_GOAL == self._phase:
@@ -523,39 +530,70 @@ class BaseAgent(BaseLineAgent):
             #     self._phase = Phase.DROP_BLOCK
 
             if Phase.PLAN_VERIFY_GOALS == self._phase:
-                goals_to_verify = [goal for goal in self._world_state['goals'] if
-                                   goal['satisfied'] and not goal['verified']]
+                goals = [goal for goal in self._world_state['goals']]
                 self._navigator.reset_full()
-                for goal in goals_to_verify:
+                self._phase = Phase.PLAN_NEXT_ACTION
+                for goal in goals:
                     self._navigator.add_waypoint(goal['location'])
-                self._phase = Phase.VERIFY_GOALS
+                    self._phase = Phase.VERIFY_GOALS
 
             if Phase.VERIFY_GOALS == self._phase:
                 # handle observations has a check to see if you are on a goal state that needs verification
                 # if so it verifies it or not
                 self._state_tracker.update(state)
+
                 action = self._navigator.get_move_action(self._state_tracker)
                 if action is not None:
                     return action, {}
-                if len(self.get_missing_goals()) == 0:
-                    self._phase = Phase.PLAN_FIX_SOLUTION
+                self._phase = Phase.PLAN_NEXT_ACTION
+
+            if Phase.PLAN_FIX_SOLUTION == self._phase:
+                goals = [goal for goal in self._world_state['goals']]
+                self._navigator.reset_full()
+                for goal in goals:
+                    self._navigator.add_waypoint(goal['location'])
+                    self._phase = Phase.FIX_SOLUTION
+                    self._current_state = {'type': Status.FIXING_SOLUTION, 'cur_goal':0}
+
+            if Phase.FIX_SOLUTION == self._phase:
+                self._state_tracker.update(state)
+                cur_goal = [g for g in self._world_state['goals'] if g['index'] == self._current_state['cur_goal']]
+                if len(cur_goal) > 0:
+                    cur_goal = cur_goal[0]
+                    if len(state.get_self()['is_carrying']) > 0:
+                        self.plan_drop_beside_goal(state)
+                        self.__next_phase.append(Phase.PLAN_FIX_SOLUTION)
+                        continue
+                    else:
+                        blocks_on_goal = [b for b in observations['blocks'] if b['location'] == cur_goal['location']]
+                        if len(blocks_on_goal) > 0:
+                            action = self.pickup_block(agent_name, observations, blocks_on_goal[0]['obj_id'])
+                            self._phase = Phase.FIX_SOLUTION
+                            if action is not None:
+                                return action
+
+                action = self._navigator.get_move_action(self._state_tracker)
+                if action is not None:
+                    self._current_state['cur_goal'] = self._current_state['cur_goal']+1
+                    return action, {}
                 else:
                     self._phase = Phase.PLAN_NEXT_ACTION
 
-            if Phase.PLAN_FIX_SOLUTION == self._phase:
-                # TODO:
+
+
+            if Phase.RETRY_SOLUTION == self._phase:
+                self._phase = Phase.PLAN_FIX_SOLUTION
                 pass
 
-            if Phase.FIX_SOLUTION == self._phase:
-                # TODO:
-                pass
+            if Phase.DROP_NEXT_TO_GOAL == self._phase:
+                return self.drop_beside_goal(state)
 
     def plan_next_action(self, state):
         self._navigator.reset_full()
         moving_to_target = False
         missing_goals = self.get_missing_goals()
         if len(missing_goals) == 0:
-            self._phase = Phase.PLAN_VERIFY_GOALS
+            self._phase = Phase.RETRY_SOLUTION
             return
         if (len(state.get_self()['is_carrying']) < self._carrying_capacity
                 and len(state.get_self()['is_carrying']) < len(missing_goals)):
@@ -567,7 +605,15 @@ class BaseAgent(BaseLineAgent):
                     break
                     
         elif len(state[self.agent_id]['is_carrying']) > 0:
-            self._phase = Phase.PLAN_PATH_TO_GOAL
+            sat_goals = sorted([goal for goal in self._world_state['goals'] if goal['satisfied']], key=lambda g: g['index'])
+            if len([goal for goal in self._world_state['goals'] if not goal['verified']]) > 0:
+                # if there exist unverified but satisfied goals, verify those
+                self._phase = Phase.PLAN_VERIFY_GOALS
+            elif len(sat_goals) > 0 and not self.previousGoalsSatisfied(sat_goals[-1]['index']):
+                self.plan_drop_beside_goal(state)
+                self.__next_phase.append(Phase.PLAN_FIX_SOLUTION)
+            else:
+                self._phase = Phase.PLAN_PATH_TO_GOAL
             moving_to_target = True
             
         if not moving_to_target:
@@ -648,6 +694,23 @@ class BaseAgent(BaseLineAgent):
                 if self._is_lazy:
                     self._set_lazy(self.dist(self._you, goal))
                 self._phase = Phase.FOLLOW_PATH_TO_GOAL
+                self._current_state = {'type': Status.MOVING_TO_GOAL, 'goal': goal}
+
+    def follow_path_to_goal(self, state, agent_name):
+        self._state_tracker.update(state)
+        action = self._navigator.get_move_action(self._state_tracker)
+        if action is not None:
+            return action, {}
+        else:
+            goal_vis = self._current_state['goal']['visualization']
+            block_to_drop = [b for b in state.get_self()['is_carrying']
+                             if b['visualization']['size'] == goal_vis['size']
+                             and b['visualization']['shape'] == goal_vis['shape']
+                             and b['visualization']['colour'] == goal_vis['colour']]
+            if len(block_to_drop) > 0:
+                return self.drop_block(agent_name, state, block_to_drop[0]['obj_id'])
+            else:
+                self._phase = Phase.PLAN_NEXT_ACTION
 
     def open_door(self, agent_name):
         self._phase = Phase.PLAN_SEARCH_ROOM
@@ -668,46 +731,90 @@ class BaseAgent(BaseLineAgent):
             self._set_lazy(len(self._navigator.get_all_waypoints()))
         self._phase = Phase.SEARCH_ROOM
 
-    def pickup_block(self, agent_name, observations):
+    def pickup_block(self, agent_name, observations, block_id):
+        # picks up block specified by block id iff it is in observations
         self._phase = Phase.PLAN_NEXT_ACTION
-        missing_goals = self.get_missing_goals()
-        next_goal_index = len(self._you['is_carrying'])
-        if len(missing_goals) <= next_goal_index:
-            return
-        goal = missing_goals[next_goal_index]
+
         for block in observations['blocks']:
-            if block['visualization'] == goal['visualization']:
-                # remove block from world_state
+            if block['obj_id'] == block_id:
+                # if block was on a sat target, unsat target
+                goals_with_same_vis = [g for g in self._world_state['goals'] if g['visualization'] == block['visualization']]
+                sat_goal = [g for g in goals_with_same_vis if g['location'] == block['location']]
+                for g in sat_goal:
+                    g['satisfied'] = False
+                    g['verified'] = False
+
+                if len(goals_with_same_vis) > 0:
+                    self._sendMessage(
+                        'Picking up goal block {} at location {}'.format(json.dumps(block['visualization']),
+                                                                         block['location']),
+                        agent_name)
                 for b in self._world_state['found_blocks']:
                     if b['visualization'] == block['visualization'] and b['location'] == block['location']:
                         self._world_state['found_blocks'].remove(b)
                         break
-
-                self._sendMessage(
-                    'Picking up goal block {} at location {}'.format(json.dumps(block['visualization']),
-                                                                     block['location']),
-                    agent_name)
                 return GrabObject.__name__, {'object_id': block['obj_id']}
 
-    def drop_block(self, agent_name, state):
+    def drop_block(self, agent_name, state, block_id):
         self._phase = Phase.PLAN_NEXT_ACTION
-        if len(state.get_self()['is_carrying']) == 0:
-            return
-        block = state.get_self()['is_carrying'][0]
-        block_vis = copy.deepcopy(block['visualization'])
+
+        block_to_drop = list(filter(lambda b: b['obj_id'] == block_id, state.get_self()['is_carrying']))
+        if len(block_to_drop) > 0:
+            block_to_drop = block_to_drop[0]
+        else:
+            return None
+        block_vis = copy.deepcopy(block_to_drop['visualization'])
         block_vis.pop('depth')
         block_vis.pop('opacity')
         block_vis.pop('visualize_from_center')
-        for goal in self.get_missing_goals():
-            if state.get_self()['location'] == goal['location'] and block_vis == goal['visualization']:
+        # block_vis = {'size': block_to_drop['visualization']['size'], 'shape': block_to_drop['visualization']['shape'],
+        #              'colour': block_to_drop['visualization']['colour']}
+        for goal in self._world_state['goals']:
+            if goal['location'] == state.get_self()['location'] \
+                    and goal['visualization'] == block_vis:
                 goal['satisfied'] = True
                 goal['verified'] = True
                 goal['by'] = agent_name
                 break
+
         if len(state.get_self()['is_carrying']) > 1:
             self.__next_phase.append(Phase.PLAN_PATH_TO_GOAL)
         self._sendMessage('Dropped goal block {} at drop location {}'.format(json.dumps(block_vis), state.get_self()['location']), agent_name)
-        return DropObject.__name__, {'object_id': block['obj_id']}
+        return DropObject.__name__, {'object_id': block_to_drop['obj_id']}
+
+    def plan_drop_beside_goal(self, state):
+        if len(state.get_self()['is_carrying']) == 0:
+            return
+        block_to_drop = copy.deepcopy(state.get_self()['is_carrying'][0])
+        block_to_drop['visualization'].pop('opacity')
+        block_to_drop['visualization'].pop('visualize_from_center')
+        block_to_drop['visualization'].pop('depth')
+        goals_of_block = [g for g in self._world_state['goals'] if g['visualization'] == block_to_drop['visualization']]
+        goal_locations = [g['location'] for g in self._world_state['goals']]
+        drop_location = copy.deepcopy(state.get_self()['location'])
+        if (len(goals_of_block) > 0):
+            drop_location = copy.deepcopy(goals_of_block[0]['location'])
+        while drop_location in goal_locations:
+            drop_location = (drop_location[0]-1, drop_location[1])
+        self._navigator.reset_full()
+        self._navigator.add_waypoint(drop_location)
+        self._phase = Phase.DROP_NEXT_TO_GOAL
+
+    def drop_beside_goal(self, state):
+        self._state_tracker.update(state)
+        action = self._navigator.get_move_action(self._state_tracker)
+        if action is not None:
+            return action, {}
+
+        block_to_drop = copy.deepcopy(state.get_self()['is_carrying'][0])
+        block_to_drop['visualization'].pop('opacity')
+        block_to_drop['visualization'].pop('visualize_from_center')
+        block_to_drop['visualization'].pop('depth')
+
+        self._sendMessage('Dropped goal block {} at drop location {}'.format(json.dumps(block_to_drop['visualization']), state.get_self()['location']), state.get_self()['obj_id'])
+        self._phase = Phase.PLAN_NEXT_ACTION
+        return DropObject.__name__, {'object_id': block_to_drop['obj_id']}
+
 
     # TODO: remove when deemed absolutely unnecessary/useless
     # def verify_goal(self, observations):
@@ -763,7 +870,7 @@ class BaseAgent(BaseLineAgent):
         for i in range(len(blocks)):
             blocks[i]['index'] = i
             blocks[i]['satisfied'] = False
-            blocks[i]['verified'] = False
+            blocks[i]['verified'] = True     # at the start of a game all goals are standard not satisfied, so we can assume this is verified
             blocks[i]['by'] = None
             self._world_state['goals'].append(blocks[i])
 
