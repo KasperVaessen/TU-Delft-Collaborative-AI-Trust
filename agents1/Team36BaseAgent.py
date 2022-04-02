@@ -360,7 +360,7 @@ class BaseAgent(BaseLineAgent):
             index = state['World']['team_members'].index(member)
             if self._world_state['agent_index'] == -1 and member == agent_name:
                 self._world_state['agent_index'] = index
-            if member != agent_name and member not in self._world_state['teammembers']:
+            if member != agent_name and member not in self._beliefs:
                 self._world_state['teammembers'][member] = {'state':{'type':None}, 'carrying': [], 'index':index}
                 self._beliefs[member] = {
                     "Competence": 0.5,
@@ -436,6 +436,7 @@ class BaseAgent(BaseLineAgent):
                             action, param = self.pickup_block(agent_name, observations, targets_in_range[0]['obj_id'])
                             return action, param
                         else:
+                            self._world_state['found_blocks'].remove(closest_target)
                             self._phase = Phase.PLAN_NEXT_ACTION
                     except:
                         self._phase = Phase.PLAN_NEXT_ACTION
@@ -614,7 +615,7 @@ class BaseAgent(BaseLineAgent):
             else:
                 self._phase = Phase.PLAN_PATH_TO_GOAL
             moving_to_target = True
-            
+
         if not moving_to_target:
             self._phase = Phase.PLAN_PATH_TO_ROOM
 
@@ -765,6 +766,13 @@ class BaseAgent(BaseLineAgent):
 
         block_vis = {'size': block_to_drop['visualization']['size'], 'shape': block_to_drop['visualization']['shape'],
                      'colour': block_to_drop['visualization']['colour']}
+        for goal in sorted([goal for goal in self._world_state['goals']], key=lambda g: g['index']):
+            if goal['location'] == state.get_self()['location'] \
+                    and goal['visualization'] == block_vis:
+                break
+            elif not goal['satisfied']:
+                self.plan_drop_beside_goal(state)
+                return
         for goal in self._world_state['goals']:
             if goal['location'] == state.get_self()['location'] \
                     and goal['visualization'] == block_vis:
@@ -772,6 +780,7 @@ class BaseAgent(BaseLineAgent):
                 goal['verified'] = True
                 goal['by'] = agent_name
                 break
+
 
         if len(state.get_self()['is_carrying']) > 1:
             self.__next_phase.append(Phase.PLAN_PATH_TO_GOAL)
