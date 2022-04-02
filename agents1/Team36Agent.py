@@ -40,6 +40,7 @@ class Status(enum.Enum):
     PICKING_UP_BLOCK = 2,
     FIXING_SOLUTION = 3,
 
+
 class BaseAgent(BaseLineAgent):
 
     def __init__(self, settings: Dict[str, object]):
@@ -448,20 +449,9 @@ class BaseAgent(BaseLineAgent):
                     self.__next_phase.append(Phase.PLAN_PATH_TO_CLOSED_DOOR)
                     self._navigator.reset_full()
                     continue
-                self._state_tracker.update(state)
-                action = self._navigator.get_move_action(self._state_tracker)
-                if action is not None:
-                    return action, {}
-                else:
-                    goal_vis = self._current_state['goal']['visualization']
-                    block_to_drop = [b for b in state.get_self()['is_carrying']
-                                     if b['visualization']['size'] == goal_vis['size']
-                                     and b['visualization']['shape'] == goal_vis['shape']
-                                     and b['visualization']['colour'] == goal_vis['colour']]
-                    if len(block_to_drop) > 0:
-                        return self.drop_block(agent_name, state, block_to_drop[0]['obj_id'])
-                    else:
-                        self._phase = Phase.PLAN_NEXT_ACTION
+                res = self.follow_path_to_goal(state, agent_name)
+                if res is not None:
+                    return res
 
             if Phase.FOLLOW_PATH_TO_CLOSED_DOOR == self._phase:
                 if self._is_lazy and self._check_if_lazy():
@@ -697,6 +687,22 @@ class BaseAgent(BaseLineAgent):
                     self._set_lazy(self.dist(self._you, goal))
                 self._phase = Phase.FOLLOW_PATH_TO_GOAL
                 self._current_state = {'type': Status.MOVING_TO_GOAL, 'goal': goal}
+
+    def follow_path_to_goal(self, state, agent_name):
+        self._state_tracker.update(state)
+        action = self._navigator.get_move_action(self._state_tracker)
+        if action is not None:
+            return action, {}
+        else:
+            goal_vis = self._current_state['goal']['visualization']
+            block_to_drop = [b for b in state.get_self()['is_carrying']
+                             if b['visualization']['size'] == goal_vis['size']
+                             and b['visualization']['shape'] == goal_vis['shape']
+                             and b['visualization']['colour'] == goal_vis['colour']]
+            if len(block_to_drop) > 0:
+                return self.drop_block(agent_name, state, block_to_drop[0]['obj_id'])
+            else:
+                self._phase = Phase.PLAN_NEXT_ACTION
 
     def open_door(self, agent_name):
         self._phase = Phase.PLAN_SEARCH_ROOM
