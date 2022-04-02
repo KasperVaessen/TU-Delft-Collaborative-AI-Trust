@@ -88,18 +88,19 @@ class ColorBlindAgent(BaseAgent):
         self._possible_targets = {}
         missing_index = len(missing_goals)
         for block in self._world_state['found_blocks']:
-            try:
-                i = missing_goals.index(block['visualization'])
+            if block['location'] != self._target_location:
+                try:
+                    i = missing_goals.index(block['visualization'])
 
-                if i < missing_index:
-                    missing_index = i
-                    self._possible_targets = {block['by']: [block]}
-                elif i == missing_index:
-                    self._possible_targets[block['by']].append(block)
-            except KeyError:
-                self._possible_targets[block['by']] = [block]
-            except ValueError:
-                pass
+                    if i < missing_index:
+                        missing_index = i
+                        self._possible_targets = {block['by']: [block]}
+                    elif i == missing_index:
+                        self._possible_targets[block['by']].append(block)
+                except KeyError:
+                    self._possible_targets[block['by']] = [block]
+                except ValueError:
+                    pass
 
         if (len(state.get_self()['is_carrying']) < self._carrying_capacity
                 and len(state.get_self()['is_carrying']) < len(missing_goals)
@@ -115,7 +116,7 @@ class ColorBlindAgent(BaseAgent):
         if not moving_to_target:
             self._phase = Phase.PLAN_PATH_TO_ROOM
 
-    def pickup_block(self, agent_name, observations):
+    def pickup_block(self, agent_name, observations, block_id):
         self._phase = Phase.PLAN_NEXT_ACTION
         missing_goals = self.get_missing_goals()
         for block in observations['blocks']:
@@ -153,3 +154,25 @@ class ColorBlindAgent(BaseAgent):
             self._navigator.reset_full()
             self._navigator.add_waypoint(self._target_location)
             self._phase = Phase.FOLLOW_PATH_TO_GOAL
+
+    def follow_path_to_goal(self, state, agent_name):
+        self._state_tracker.update(state)
+        action = self._navigator.get_move_action(self._state_tracker)
+        if action is not None:
+            return action, {}
+        else:
+            return self.drop_block(agent_name, state, state.get_self()['is_carrying'][0]['obj_id'])
+
+    def drop_block(self, agent_name, state, block_id):
+        self._phase = Phase.PLAN_NEXT_ACTION
+
+        block_to_drop = list(filter(lambda b: b['obj_id'] == block_id, state.get_self()['is_carrying']))
+        if len(block_to_drop) > 0:
+            block_to_drop = block_to_drop[0]
+        else:
+            return None
+        block_vis = {'size': block_to_drop['visualization']['size'], 'shape': block_to_drop['visualization']['shape']}
+        self._sendMessage(
+            'Dropped goal block {} at drop location {}'.format(json.dumps(block_vis), state.get_self()['location']),
+            agent_name)
+        return DropObject.__name__, {'object_id': block_to_drop['obj_id']}
