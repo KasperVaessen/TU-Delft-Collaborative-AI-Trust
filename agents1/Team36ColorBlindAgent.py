@@ -51,7 +51,6 @@ class ColorBlindAgent(BaseAgent):
 
 
     def decide_on_bw4t_action(self, state):
-        print(self._phase)
         state = self.filter_bw4t_observations(state)
         return super().decide_on_bw4t_action(state)
 
@@ -146,22 +145,11 @@ class ColorBlindAgent(BaseAgent):
                 return GrabObject.__name__, {'object_id': block['obj_id']}
         # bij observations, pak de missing die het laatst nodig is!
 
-    # def plan_path_to_goal(self, state):
-    #     # Alway place the target block next to target location
-    #     if len(state.get_self()['is_carrying']) == 0:
-    #         self._phase = Phase.PLAN_NEXT_ACTION
-    #     else:
-    #         block_vis = copy.copy(state.get_self()['is_carrying'][0]['visualization'])
-    #         block_vis.pop('opacity')
-    #         block_vis.pop('visualize_from_center')
-    #         block_vis.pop('depth')
-    #         goal = None
-    #         for g in self.get_missing_goals():
-    #             if g['visualization'] == block_vis:
-    #                 goal = g
-    #                 break
-    #         if goal is None:
-    #             self._phase = Phase.DROP_BLOCK
-    #         self._navigator.reset_full()
-    #         self._navigator.add_waypoint(self._target_location)
-    #         self._phase = Phase.FOLLOW_PATH_TO_GOAL
+    def plan_path_to_goal(self, state):
+        # Alway place the target block next to target location
+        if len(state.get_self()['is_carrying']) == 0:
+            self._phase = Phase.PLAN_NEXT_ACTION
+        else:
+            self._navigator.reset_full()
+            self._navigator.add_waypoint(self._target_location)
+            self._phase = Phase.FOLLOW_PATH_TO_GOAL
