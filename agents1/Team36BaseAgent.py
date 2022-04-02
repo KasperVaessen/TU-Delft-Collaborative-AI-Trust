@@ -394,7 +394,6 @@ class BaseAgent(BaseLineAgent):
                 break
 
         while True:
-            print(self._phase)
             if Phase.PLAN_NEXT_ACTION == self._phase:
                 if len(self.__next_phase) > 0:
                     self._phase = self.__next_phase.pop()
@@ -763,12 +762,9 @@ class BaseAgent(BaseLineAgent):
             block_to_drop = block_to_drop[0]
         else:
             return None
-        block_vis = copy.deepcopy(block_to_drop['visualization'])
-        block_vis.pop('depth')
-        block_vis.pop('opacity')
-        block_vis.pop('visualize_from_center')
-        # block_vis = {'size': block_to_drop['visualization']['size'], 'shape': block_to_drop['visualization']['shape'],
-        #              'colour': block_to_drop['visualization']['colour']}
+
+        block_vis = {'size': block_to_drop['visualization']['size'], 'shape': block_to_drop['visualization']['shape'],
+                     'colour': block_to_drop['visualization']['colour']}
         for goal in self._world_state['goals']:
             if goal['location'] == state.get_self()['location'] \
                     and goal['visualization'] == block_vis:
