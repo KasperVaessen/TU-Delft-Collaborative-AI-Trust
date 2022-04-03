@@ -3,7 +3,10 @@ import random
 from typing import Dict
 import json
 import enum
-from agents1.BW4TBaselineAgent import BaseLineAgent
+
+from matrx.messages import Message
+
+from bw4t.BW4TBrain import BW4TBrain
 from matrx.agents.agent_utils.state import State
 from matrx.agents.agent_utils.navigator import Navigator
 from matrx.agents.agent_utils.state_tracker import StateTracker
@@ -41,10 +44,12 @@ class Status(enum.Enum):
     FIXING_SOLUTION = 3,
 
 
-class BaseAgent(BaseLineAgent):
+class BaseAgent(BW4TBrain):
 
     def __init__(self, settings: Dict[str, object]):
         super().__init__(settings)
+
+        self._teamMembers = []
 
         self._maxTrust = 1.0
         self._current_room = None
@@ -97,8 +102,23 @@ class BaseAgent(BaseLineAgent):
 
         self.__next_phase = []
 
+    def _sendMessage(self, mssg, sender):
+        '''
+        Enable sending messages in one line of code
+        '''
+        msg = Message(content=mssg, from_id=sender)
+        if msg.content not in self.received_messages:
+            self.send_message(msg)
+
     def _processMessages(self, teamMembers, state):
-        messages = super()._processMessages(teamMembers)
+        messages = {}
+        for member in teamMembers:
+            messages[member] = []
+        for mssg in self.received_messages:
+            for member in teamMembers:
+                if mssg.from_id == member:
+                    messages[member].append(mssg.content)
+
         self.received_messages.clear()
         current_world_state = self._world_state
 
